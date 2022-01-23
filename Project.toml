@@ -1,0 +1,4 @@
+name = "ReflToml"
+uuid = "d1a85acf-acaa-4593-acac-c398b80e0e9d"
+authors = ["William Manning <manning.w27@gmail.com>"]
+version = "0.1.0"
