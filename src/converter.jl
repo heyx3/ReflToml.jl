@@ -1,37 +1,53 @@
 "Describes whether we're serializing (write) or deserializing (read)."
 @enum ConverterModes CM_Write CM_Read
 
+println("#TODO: Handle `missing` like `nothing`")
+println("#TODO: Mark specific struct fields as being serialized/deserialized with their literal type, not their declared type, to handle massive unions like `Contiguous{T}`")
+println("#TODO: support 'kwargs' thing from StructTypes")
+
+
 """
 Serializer/deserializer settings.
-This type is a functor, acting as the conversion function required by the `TOML` package
-    to make a value serializable.
+This type is a functor, converting data into TOML-friendly primitives, or vice-versa.
+
 The functor signature for serializing is `my_converter(x[, field_type_of_x])::TomlType`.
-The functor signature for deserializingn is `my_converter(x::TomlType, field_type::Type)`
+The functor signature for deserializing is `my_converter(x::TomlType, T)::T`.
 
 The settings are:
- * `{ConverterMode}` : The type parameter.
-        Pass `CM_Read` for deserialiing, and `CM_Write` for serializing.
- * `null_string` (default is disabled) : a string that corresponds to `nothing`
-        if the parsed type can be `nothing`.
- * `write_nulls` (default is false) : if true, null values will be explicitly written
-       using the above `null_string` value (throwing an error if it's not set).
+ * `{ConverterMode}` : The type parameter determines whether to
+        serialize (`CM_Write`) or deserialize (`CM_Read`).
+ * `null_string` (default is `"null"`) : allows for reading and writing `nothing` values
+        using a special string to represent them. Disable by setting the param to `nothing`.
+        Note that null values can also be represented in some circumstances
+            by simply excluding the field.
+ * `write_null_fields` (default is false) : if true, then whenever a struct's field
+        has the value `nothing` and thus could have been omitted from serialization,
+        this writer will still explicitly write it as the `null_string` value.
+        Enabling this feature and disabling `null_string` will throw an error.
  * `default_struct_type` (default is `Struct()`) : if a struct type hasn't been assigned a
         `StructTypes.StructType`, this one is given to it.
         Set to `nothing` to disable this feature, throwing an error when
         a struct doesn't have a `StructType`.
- * `enums_from_ints` (default is true) : if true, enums can be read from integer values.
+ * `enums_can_be_ints` (default is true) : if true, enums can be read from integer values.
         Otherwise, they have the default behavior for StructTypes, only parsable from strings.
+ * `bools_from_strings` (default is true) : if true, bools can be read from strings like "T" or "false".
+        Note that bools can always be serialized *as* strings, regardless of this setting.
  * `special_floats_as_strings` (default is true) : if true, the special float values
-        Inf, Inf, and NaN can be serialized/deserialized from strings.
+        +Inf, -Inf, and NaN can be serialized/deserialized from strings.
 """
 Base.@kwdef struct Converter{ConverterMode}
-    null_string::Union{Nothing, AbstractString} = nothing
-    write_nulls::Bool = false
+    null_string::Union{Nothing, AbstractString} = "null"
+    write_null_fields::Bool = false
     default_struct_type::Union{Nothing, StructTypes.StructType} = StructTypes.UnorderedStruct()
-    enums_from_ints::Bool = true
+    enums_can_be_ints::Bool = true
+    bools_can_be_strings::Bool = true
     special_floats_as_strings::Bool = true
 end
 
+
+#####################
+#     Interface     #
+#####################
 
 "
 If your type is a `StructTypes.ArrayType`, you can override how each element's type is serialized.
@@ -74,7 +90,10 @@ dict_value_type(d, key, value) = let et = eltype(d)
 # If the type is already TOML-friendly, pass it through.
 (c::Converter{CM_Write})(x::TomlType) = x
 
-# Otherwise, check its type and dispatch based on its StructType.
+println("#TODO: Double-check whether TOML can serialize enums as ints already")
+println("#TODO: writing unions")
+
+# In most cases, check the type of the value and dispatch based on StructType.
 (c::Converter{CM_Write})(x) = c(x, typeof(x))
 (c::Converter{CM_Write})(x, field_type) = let field_stype = StructTypes.StructType(field_type)
     # If the field is an abstract type, then write it as an abstract value.
@@ -84,7 +103,6 @@ dict_value_type(d, key, value) = let et = eltype(d)
     else
         c(StructTypes.StructType(x), field_type, x)
     end
-println("#TODO: writing unions")
 
 (c::Converter{CM_Write})(::StructTypes.NullType, _, x) =
     if isnothing(c.null_string)
@@ -156,18 +174,23 @@ end
 
     fields_exclude = StructTypes.excludes(typeof(x))
 
+    # There are a number of reasons why a field's specific value might not be written.
     fields_omitempty = StructTypes.omitempties(typeof(x))
-    @inline should_omit(field_name::Symbol, field_value) =
-        ((fields_omitempty === true) || (field_name in fields_omitempty)) &&
-        (hasmethod(iterate, tuple(typeof(field_value))) && isempty(field_value))
+    @inline hide_value(field_name::Symbol, field_value)::Bool = (
+        (!c.write_null_fields && isnothing(field_value)) ||  # It's null, and nulls should be omitted
+        (
+            ((fields_omitempty === true) || (field_name in fields_omitempty)) && # Empties should be omitted, and...
+            (hasmethod(iterate, tuple(typeof(field_value))) && isempty(field_value)) #...this value is empty.
+        )
+    )
 
     output = Dict{String, Any}()
     for field_name::Symbol in fieldnames(typeof(x))
-        # Check the exclusion list.
+        # Check if the field should be excluded.
         if !(field_name in fields_exclude)
             field_value = getproperty(x, field_name)
-            # Check the "omit empty collections" list.
-            if !should_omit(field_name, field_value)
+            # Check if the value shouldn't be written.
+            if !hide_value(field_name, field_value)
                 field_type = fieldtype(typeof(x), field_name)
                 # Change the serialized name, if requested.
                 new_name_idx = findfirst(x -> x==field_name, renamed_julia_fields)
@@ -175,7 +198,7 @@ end
                     field_name = renamed_output_fields[new_name_idx]
                 end
                 # Finally, output the field's value into the dictionary for serialization.
-                output[field_name] = c(field_value, field_type)
+                output[stringn(field_name)] = c(field_value, field_type)
             end
         end
     end
@@ -190,50 +213,52 @@ end
 # If deserialized data already satisfies the desired output type, pass it through.
 (c::Converter{CM_Read})(x::T, ::Type{TParent}) where {TParent<:TomlType, T<:TParent} = x
 
+# Support deserializing an enum from an int.
+(c::Converter{CM_Read})(x::Number, T::Type{<:Enum{I}}) where {I<:Integer} = begin
+    if c.enums_can_be_ints && isinteger(x)
+        return T(convert(I, x))
+    else
+        # Pass through to the usual behavior (almost certainly throwing an error).
+        return c(x, T, StructTypes.StructType(T))
+    end
+end
+
+# Support deserializing a Bool from a string.
+(c::Converter{CM_Read})(x::AbstractString, ::Type{Bool}) = begin
+    x = lowercase(x)
+    if c.bools_can_be_strings && (x in ("t", "true"))
+        true
+    elseif c.bools_can_be_strings && (x in ("f", "false"))
+        false
+    else
+        # Fall through to the usual behavior (almost certainly throwing an error).
+        c(x, Bool, StructTypes.StructType(Bool))
+    end
+end
+
+# Support reading the null-string.
+(c::Converter{CM_Read})(x::AbstractString, ::Type{Nothing}) = begin
+    if !isnothing(c.null_string) && (x == c.null_string)
+        nothing
+    else
+        # Fall through to the usual behavior (almost certainly throwing an error).
+        c(x, Nothing, StructTypes.StructType(Nothing))
+    end
+end
+
+println("#TODO: Read unions")
+
 # In all other cases, dispatch based on the desired type's `StructType`.
 (c::Converter{CM_Read})(x, T::Type) = c(x, T, StructTypes.StructType(T))
 
-(c::Converter{CM_Read})(x::AbstractString, T, ::StructTypes.NullType) =
-    if !isnothing(c.null_string)
-        if x == c.null_string
-            nothing
-        else
-            error("Expected a null value (\"", c.null_string, "\"), got \"", x, "\"")
-        end
-    else
-        error("Can't convert from a string value to `nothing`",
-              " (did you mean to set the `null_string` setting?): \"", x, "\"")
-    end
 (c::Converter{CM_Read})(x, T, ::StructTypes.NullType) = error(
     "Cannot convert a ", typeof(x), " to `Nothing`"
 )
-(c::Converter{CM_Read})(x::AbstractString, T, ::StructTypes.BoolType) = c(
-    if lowercase(x) in ("t", "true")
-        true
-    elseif lowercase(x) in ("f", "false")
-        false
-    else
-        error("Cannot convert string to bool: \"", x, "\"")
-    end,
-    T, StructTypes.BoolType()
-)
-(c::Converter{CM_Read})(x::Integer, T, ::StructTypes.BoolType) = StructTypes.construct(T, x)
-(c::Converter{CM_Read})(x::Number, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(), x))
-(c::Converter{CM_Read})(x::Number, T::Type{<:Enum{I}}, ::StructTypes.StringType) where {I<:Integer} =
-    if isinteger(x)
-        if c.enums_from_ints
-            error("Received a number value ", x, " to be deserialized as the enum ", T,
-                  " but `enums_from_ints` is disabled")
-        else
-            return T(convert(I, x))
-        end
-    else
-        error("Received a non-integer value ", x, " to be deserialized as the enum ", T)
-    end
+(c::Converter{CM_Read})(x, T, ::StructTypes.BoolType) = StructTypes.construct(T, x)
+(c::Converter{CM_Read})(x, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(), x))
 (c::Converter{CM_Read})(x, T, ::StructTypes.StringType) = StructTypes.construct(T, x)
-
-println("#TODO: Finish from here")
-(c::Converter{CM_Read})(x::AbstractVector, TOutArray::Type{<:Union{AbstractSet{T}, AbstractVector{T}}}, ::StructTypes.ArrayType) where {T} = begin
+println("#TODO: Finish the below")
+(c::Converter{CM_Read})(x::AbstractVector, ::Type{TField}, ::StructTypes.ArrayType) where {TField} = begin
     converted_elements = map(el -> c(el, T), x)
     return StructTypes.construct(TOutArray, converted_elements)
 end
@@ -241,6 +266,3 @@ end
     TOutDict,
     Dict((c()))
 )
-
-
-println("#TODO: support 'kwargs' thing from StructTypes")
