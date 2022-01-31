@@ -50,11 +50,11 @@ end
 #####################
 
 "
-If your type is a `StructTypes.ArrayType`, you can override how each element's type is serialized.
-For example, you can return something that's a `StructTypes.AbstractType`
-    to make it serialize type data with each element.
-By default, it'll call `eltype()`, and if that element type is `Any`,
-    then it'll use each value's exact type instead.
+For serialization of a `StructTypes.ArrayType`, this provides the serialized type of each element.
+By default, for any `AbstractArray{T}`, it'll return `T`.
+For other types, or an `AbstractArray{Any}`, it'll return each value's exact type.
+
+For deserialization, follow the `StructTypes.ArrayType` documentation.
 "
 array_el_type(a, index::Int, element) = let et = eltype(a)
     if et == Any
@@ -68,9 +68,9 @@ array_el_type(::AbstractArray{T, N}, _...) where {T, N} = error(
 )
 
 "
-Gets the desired value type for a `StructTypes.DictType` during deserialization.
-Default behavior is to try calling `eltype()`, expecting to get `<:Pair`,
-    then using that pair's value-type.
+For serialization/deserialization of a `StructTypes.DictType`,
+    this provides the type of its elements.
+Default behavior is to try calling `eltype()`, expecting to get a `Pair`.
 If that doesn't work, or the value-type is `Any`, then it will be replaced
     with each value's exact type.
 "
@@ -144,7 +144,7 @@ end
     (c(k, String, StrucTypes.StringType()) => c(v, dict_value_type(x, k, value)))
        for (k, v) in StructTypes.keyvaluepairs(x)
 )
-(c::Converter{CM_Write})(::StructType.NoStructType, _, x) =
+(c::Converter{CM_Write})(::StructTypes.NoStructType, _, x) =
     if isnothing(c.default_struct_type)
         error("No StructType defined for serializing ", typeof(x),
               " (or maybe its original field type)")
@@ -152,16 +152,18 @@ end
         c(c.default_struct_type, x)
     end
 (c::Converter{CM_Write})(::StructTypes.AbstractType, field_type, x) = begin
-    subtypes_names::NamedTuple = StructTypes.subtypes(field_type)
-    subtypes::NTuple = collect(zip(keys(subtypes_names), values(subtypes_names)))
-    subtype_idx::Union{Int, Nothing} = findfirst(s -> (x isa s[2]), subtypes)
+    subtype_data::NamedTuple = StructTypes.subtypes(field_type)
+    subtype_strings::ConstVector{Symbol} = keys(subtype_data)
+    subtype_types::ConstVector{Type} = values(subtype_data)
+
+    subtype_idx::Union{Int, Nothing} = findfirst(t -> (x isa t), subtype_types)
 
     if isnothing(subtype_idx)
         error("Object type ", typeof(x),
               " is not listed as a `StructTypes.subtypes()` of ", field_type)
     else
         return Dict(
-            "type" => subtypes[subtype_idx][1],
+            "type" => subtype_strings[subtype_idx],
             "value" => c(x)
         )
     end
@@ -257,12 +259,55 @@ println("#TODO: Read unions")
 (c::Converter{CM_Read})(x, T, ::StructTypes.BoolType) = StructTypes.construct(T, x)
 (c::Converter{CM_Read})(x, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(), x))
 (c::Converter{CM_Read})(x, T, ::StructTypes.StringType) = StructTypes.construct(T, x)
-println("#TODO: Finish the below")
-(c::Converter{CM_Read})(x::AbstractVector, ::Type{TField}, ::StructTypes.ArrayType) where {TField} = begin
-    converted_elements = map(el -> c(el, T), x)
-    return StructTypes.construct(TOutArray, converted_elements)
+(c::Converter{CM_Read})(x::AbstractVector, T::Type, ::StructTypes.ArrayType) = begin
+    if (Base.IteratorEltype(T) isa Base.HasEltype)
+        TElement = eltype(T)
+        x = map(el -> c(el, StructTypes.construct(TElement, el)))
+    end
+    return StructTypes.construct(T, x)
 end
-(c::Converter{CM_Read})(x::AbstractDict, TOutDict, ::StructTypes.DictType) = StructTypes.construct(
-    TOutDict,
-    Dict((c()))
+(c::Converter{CM_Read})(x::AbstractDict, T::Type, ::StructTypes.DictType) = StructTypes.construct(T, x)
+(c::Converter{CM_Read})(x, T::Type, ::StructTypes.NoStructType) =
+    if isnothing(c.default_struct_type)
+        error("No StructType defined for deserializing ", typeof(x))
+    else
+        c(x, T, c.default_struct_type)
+    end
+(c::Converter{CM_Read})(x::AbstractDict, T::Type, ::StructTypes.AbstractType) = begin
+    if (length(x) != 2) || !haskey(x, "type") || !haskey(x, "value")
+        error("For the AbstractType '", T, "', expected a dictionary",
+              " with the fields 'type' and 'value'")
+    end
+    subtype_string = x["type"]
+    subtype_data = x["value"]
+
+    subtypes::NamedTuple = StructTypes.subtypes(field_type)
+    subtype_strings::ConstVector{Symbol} = keys(subtypes)
+    subtype_types::ConstVector{Type} = values(subtypes)
+
+    subtype_idx::Union{Int, Nothing} = findfirst(n -> (n == subtype_string), subtype_strings)
+    if isnothing(subtype_idx)
+        error("Serialized type '", subtype_string,
+              "' is not a known type of ", T, ": ", subtype_strings)
+    end
+
+    return c(subtype_data, subtype_types[subtype_idx])
+end
+(c::Converter{CM_Read})(x, T::Type, ::StructTypes.CustomStruct) = StructTypes.construct(
+    T,
+    # If asked to "lower" the incoming value, then do so.
+    let in_type = StructTypes.lowertype(T)
+        if in_type == Any
+            if x isa AbstractDict
+                x
+            else
+                error("CustomStruct type '", T, "' didn't implement lowertype(),",
+                      " so it expects a dictionary for deserialization, but it got a ",
+                      typeof(x))
+            end
+        else
+            c(x, in_type)
+        end
+    end
 )
+#TODO:  Mutable/Struct
