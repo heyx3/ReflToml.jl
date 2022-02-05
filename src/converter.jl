@@ -224,7 +224,7 @@ end
                     field_name = renamed_output_fields[new_name_idx]
                 end
                 # Finally, output the field's value into the dictionary for serialization.
-                output[stringn(field_name)] = c(field_value, field_type)
+                output[string(field_name)] = c(field_value, field_type)
             end
         end
     end

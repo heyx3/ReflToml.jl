@@ -82,7 +82,45 @@ using WOML
             )
 end
 
-println("#TODO: Non-default converter settings")
+@testset "Converter Write struct data" begin
+    c = WOML.Converter{CM_Write}(
+        default_struct_type = StructTypes.Struct(),
+        write_null_fields = false
+    )
+
+    struct S
+        x
+    end
+    StructTypes.StructType(::Type{S}) = StructTypes.Struct()
+
+    @test c(S(5)) == Dict("x"=>5)
+    @test c(S(:a)) == Dict("x"=>"a")
+    @test c(S("1\"2\"3")) == Dict("x"=>"1\"2\"3")
+
+    @test c(S([ 1, 2, 3 ])) == Dict("x" => [ 1, 2, 3 ])
+    @test c(S(Dict(:y => NaN))) == Dict("x" => Dict("y" => "NaN"))
+
+    @test c(S(S(-1.5))) == Dict("x" => Dict("x" => -1.5))
+
+
+    struct SS
+        a::Real
+        b::S
+        c::Union{Nothing, Vector{Int}}
+    end
+    # Don't explicitly give the struct-type, it should default to `Struct()`
+
+    @test c(SS(true, S(5), [ 4, 5, 6 ])) ==
+          Dict("a" => true,
+               "b" => Dict("x" => 5),
+               "c" => [ 4, 5, 6 ])
+    # Note that the null field will be omitted in writing.
+    @test c(SS(-Inf16, S(Symbol("x\"y\"z-3")), nothing)) ==
+          Dict("a" => "-Inf",
+               "b" => Dict("x" => "x\"y\"z-3"))
+end
+
+println("#TODO: Test non-default converter settings")
 
 false && @testset "Dict{}" begin
     d = ReflToml.read("value=5")
