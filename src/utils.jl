@@ -4,7 +4,7 @@
 
 
 "A plain value type that is serializable/deserializable by the Julia `TOML` package."
-const TomlTypePlain = Union{Real, AbstractString, Dates.TimeType}
+const TomlTypePlain = Union{Integer, AbstractFloat, AbstractString, Dates.TimeType}
 
 "A simple collection that is serializable/deserializable by the Julia `TOML` package."
 const TomlType = Union{TomlTypePlain,

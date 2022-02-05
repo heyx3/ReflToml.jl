@@ -68,11 +68,17 @@ If you want something closer to normal StructTypes behavior or the real TOML sta
   * Defaults to `true`
   * *Only used for reading, not writing*
   * Normally, enums are `StructType.StringType()`, meaning they are deserialized from their string representation. However, WOML can also parse them from their integer value.
-* `bools_from_strings::Bool`
+* `bools_can_be_strings::Bool`
   * Defaults to `true`
   * *Only used for reading, not writing*
   * If true, booleans can be parsed from simple strings like `"T"` or `"false"`. Otherwise, they must come from a proper TOML boolean.
   * E.x. `reader.bools_from_strings=true; @test reader("f", Bool) == false`
+* `numbers_can_be_strings::Bool`
+  * Defaults to `true`
+  * *Only used for reading, not writing*
+  * If true, numbers can be parsed from strings, using `Base.parse(T, x)`.
+  Otherwise, they must come from a proper TOML number.
+  * For special values `NaN`, `+Inf`, and `-Inf`, see the param `special_floats_as_strings`.
 * `special_floats_as_strings::Bool`
   * Defaults to `true`
   * If true, the special float values `NaN`, `Inf`, and `-Inf` can be serialized/deserialized as the strings `"NaN"`, `"+Inf"`, and `"-Inf"`. Note that the serialized string is the same regardless of the float's type, e.x. `Inf32` becomes `"+Inf"`. This means you couldn't serialize a dictionary with two keys `Inf32` and `Inf64`. Fortunately, this is a pretty rare edge-case.

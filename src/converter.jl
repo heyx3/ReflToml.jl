@@ -2,6 +2,7 @@
 @enum ConverterModes CM_Write CM_Read
 
 println("#TODO: Handle `missing` like `nothing`")
+println("#TODO: Handle rationals (as string or as Float64?)")
 println("#TODO: Mark specific struct fields as being serialized/deserialized with their literal type, not their declared type, to handle massive unions like `Contiguous{T}`")
 println("#TODO: support 'kwargs' thing from StructTypes")
 
@@ -30,10 +31,11 @@ The settings are:
         a struct doesn't have a `StructType`.
  * `enums_can_be_ints` (default is true) : if true, enums can be read from integer values.
         Otherwise, they have the default behavior for StructTypes, only parsable from strings.
- * `bools_from_strings` (default is true) : if true, bools can be read from strings like "T" or "false".
+ * `bools_can_be_strings` (default is true) : if true, bools can be read from strings like "T" or "false".
         Note that bools can always be serialized *as* strings, regardless of this setting.
- * `special_floats_as_strings` (default is true) : if true, the special float values
-        +Inf, -Inf, and NaN can be serialized/deserialized from strings.
+ * `numbers_can_be_strings` (default is true) : if true, numbers can be parsed from strings,
+        using `Base.parse(T, x)`. This also enables serialization of `NaN`, `Inf`, and `-Inf`,
+        which normally aren't allowed in TOML.
 """
 Base.@kwdef struct Converter{ConverterMode}
     null_string::Union{Nothing, AbstractString} = "null"
@@ -41,8 +43,7 @@ Base.@kwdef struct Converter{ConverterMode}
     default_struct_type::Union{Nothing, StructTypes.StructType} = StructTypes.UnorderedStruct()
     enums_can_be_ints::Bool = true
     bools_can_be_strings::Bool = true
-    #TODO: numbers_can_be_strings::Bool = true
-    special_floats_as_strings::Bool = true
+    numbers_can_be_strings::Bool = true
 end
 
 
@@ -89,27 +90,29 @@ end
 ###################
 
 # If the type is already TOML-friendly, pass it through.
-# Special exceptions for the special floats.
+# Special exceptions are the special float values "NaN", "+Inf", and "-Inf".
 (c::Converter{CM_Write})(x::TomlType) = begin
     if x isa AbstractFloat
         if isinf(x)
-            if c.special_floats_as_strings
+            if c.numbers_can_be_strings
                 return (x > 0) ? "+Inf" : "-Inf"
             else
-                error("Can't convert an infinite float to TOML, unless `special_floats_as_strings` is enabled")
+                error("Can't convert an infinite float to TOML, unless `numbers_can_be_strings` is enabled")
             end
         elseif isnan(x)
-            if c.special_floats_as_strings
+            if c.numbers_can_be_strings
                 return "NaN"
             else
-                error("Cant convert a NaN to TOML, unless `special_floats_as_strings` is enabled")
+                error("Cant convert a NaN to TOML, unless `numbers_can_be_strings` is enabled")
             end
+        else
+            return x
         end
+    else
+        return x
     end
-    return x
 end
 
-println("#TODO: Double-check whether TOML can serialize enums as ints already")
 println("#TODO: writing unions")
 
 # In most cases, check the type of the value and dispatch based on StructType.
@@ -131,29 +134,7 @@ end
         c.null_string
     end
 (c::Converter{CM_Write})(::StructTypes.BoolType, _, x) = Bool(x)
-(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x) = StructTypes.construct(StructTypes.numbertype(field_type), x)
-(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x::AbstractFloat) = begin
-    x2 = StructTypes.construct(StructTypes.numbertype(field_type), x)
-    # If the float value is infinity or NaN, serialize it as a string.
-    if c.special_floats_as_strings
-        if isinf(x2)
-            if x2 < 0
-                return "-Inf"
-            else
-                return "+Inf"
-            end
-        elseif isnan(x2)
-            return "NaN"
-        else
-            return x2
-        end
-    elseif isinf(x2) || isnan(x2)
-        error("Can't write the value ", typeof(x2), "(", x2, ") in standard TOML,",
-              " you have to enable the `special_floats_as_strings` setting")
-    else
-        return x2
-    end
-end
+(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x) = c(StructTypes.construct(StructTypes.numbertype(field_type), x))
 (c::Converter{CM_Write})(::StructTypes.StringType, _, x) = string(x)
 (c::Converter{CM_Write})(::StructTypes.ArrayType, field_type, x) = let vec = [ ]
     for (i::Int, el) in enumerate(x)
@@ -239,22 +220,13 @@ end
 # If deserialized data already satisfies the desired output type, pass it through.
 (c::Converter{CM_Read})(x::T, ::Type{TParent}) where {TParent<:TomlType, T<:TParent} = x
 
-# Support deserializing a float from special strings like "NaN".
-(c::Converter{CM_Read})(x::AbstractString, T::Type{<:AbstractFloat}) = begin
-    if c.special_floats_as_strings
-        xL = lowercase(x)
-        if (xL == "+inf") || (xL == "inf")
-            return convert(T, +Inf)
-        elseif xL == "-inf"
-            return convert(T, -Inf)
-        elseif xL == "nan"
-            return convert(T, NaN)
-        else
-            error("Expected a special string for float (e.x. 'NaN'), got: '", x, "'")
-        end
+# Support deserializing a numbers from a string.
+(c::Converter{CM_Read})(x::AbstractString, T::Type{<:Real}) = begin
+    if !c.numbers_can_be_strings
+        error("Can't parse a ", T, " from a ", typeof(x),
+              " unless `numbers_can_be_strings` is enabled")
     else
-        error("Can't convert a string into a float. Did you mean to enable",
-              " `special_floats_as_strings`?")
+        return parse(T, x)
     end
 end
 
@@ -281,6 +253,9 @@ end
     end
 end
 
+# Support deserializing Symbols from things.
+(c::Converter{CM_Read})(x, ::Type{Symbol}) = Symbol(x)
+
 # Support reading the null-string.
 (c::Converter{CM_Read})(x::AbstractString, ::Type{Nothing}) = begin
     if !isnothing(c.null_string) && (x == c.null_string)
@@ -300,16 +275,23 @@ println("#TODO: Read unions")
     "Cannot convert a ", typeof(x), " to `Nothing`"
 )
 (c::Converter{CM_Read})(x, T, ::StructTypes.BoolType) = StructTypes.construct(T, x)
-(c::Converter{CM_Read})(x, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(), x))
+(c::Converter{CM_Read})(x, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(T), x))
 (c::Converter{CM_Read})(x, T, ::StructTypes.StringType) = StructTypes.construct(T, x)
 (c::Converter{CM_Read})(x::AbstractVector, T::Type, ::StructTypes.ArrayType) = begin
+    # If a specific element type is listed, make sure each element is that desired type.
     if (Base.IteratorEltype(T) isa Base.HasEltype)
         TElement = eltype(T)
-        x = map(el -> c(el, StructTypes.construct(TElement, el)))
+        x = map(i -> c(i, TElement), x)
     end
-    return StructTypes.construct(T, x)
+    # Call through to the constructor if necessary.
+    return (x isa T) ? x : StructTypes.construct(T, x)
 end
 (c::Converter{CM_Read})(x::AbstractDict, T::Type, ::StructTypes.DictType) = StructTypes.construct(T, x)
+(c::Converter{CM_Read})(x::AbstractDict{<:AbstractString}, T::Type{<:AbstractDict{K, V}}, ::StructTypes.DictType) where {K<:TomlTypePlain, V} = begin
+    # Convert the incoming key type (always strings in TOML) to the desired type.
+    # Do the same for values.
+    return T(c(k, K) => c(v, V) for (k, v) in x)
+end
 (c::Converter{CM_Read})(x, T::Type, ::StructTypes.NoStructType) =
     if isnothing(c.default_struct_type)
         error("No StructType defined for deserializing ", typeof(x))
