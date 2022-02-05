@@ -5,6 +5,7 @@ Also supports JSON3-esque serialization of data structures, using `StructTypes`.
 """
 module WOML
 
+using Dates
 using TOML, StructTypes
 
 include("utils.jl")
@@ -22,5 +23,7 @@ function read(io::IO, T = Dict{String, Any})
     struct_type = StructTypes.StructType(T)
 
 end
+
+export CM_Read, CM_Write
 
 end # module

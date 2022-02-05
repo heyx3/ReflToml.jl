@@ -41,6 +41,7 @@ Base.@kwdef struct Converter{ConverterMode}
     default_struct_type::Union{Nothing, StructTypes.StructType} = StructTypes.UnorderedStruct()
     enums_can_be_ints::Bool = true
     bools_can_be_strings::Bool = true
+    #TODO: numbers_can_be_strings::Bool = true
     special_floats_as_strings::Bool = true
 end
 
@@ -56,14 +57,14 @@ For other types, or an `AbstractArray{Any}`, it'll return each value's exact typ
 
 For deserialization, follow the `StructTypes.ArrayType` documentation.
 "
-array_el_type(a, index::Int, element) = let et = eltype(a)
+array_el_type(a::AbstractVector, index::Int, element) = let et = eltype(a)
     if et == Any
         typeof(element)
     else
         et
     end
 end
-array_el_type(::AbstractArray{T, N}, _...) where {T, N} = error(
+array_el_type(::AbstractArray{T, N}, index::Int, element) where {T, N} = error(
     "WOML currently doesn't support multi-dimensional arrays."
 )
 
@@ -80,7 +81,7 @@ dict_value_type(d, key, value) = let et = eltype(d)
     else
         return typeof(value)
     end
-#
+end
 
 
 ###################
@@ -88,7 +89,25 @@ dict_value_type(d, key, value) = let et = eltype(d)
 ###################
 
 # If the type is already TOML-friendly, pass it through.
-(c::Converter{CM_Write})(x::TomlType) = x
+# Special exceptions for the special floats.
+(c::Converter{CM_Write})(x::TomlType) = begin
+    if x isa AbstractFloat
+        if isinf(x)
+            if c.special_floats_as_strings
+                return (x > 0) ? "+Inf" : "-Inf"
+            else
+                error("Can't convert an infinite float to TOML, unless `special_floats_as_strings` is enabled")
+            end
+        elseif isnan(x)
+            if c.special_floats_as_strings
+                return "NaN"
+            else
+                error("Cant convert a NaN to TOML, unless `special_floats_as_strings` is enabled")
+            end
+        end
+    end
+    return x
+end
 
 println("#TODO: Double-check whether TOML can serialize enums as ints already")
 println("#TODO: writing unions")
@@ -103,6 +122,7 @@ println("#TODO: writing unions")
     else
         c(StructTypes.StructType(x), field_type, x)
     end
+end
 
 (c::Converter{CM_Write})(::StructTypes.NullType, _, x) =
     if isnothing(c.null_string)
@@ -111,9 +131,9 @@ println("#TODO: writing unions")
         c.null_string
     end
 (c::Converter{CM_Write})(::StructTypes.BoolType, _, x) = Bool(x)
-(c::Converter{CM_Write})(::StructTypes.NumberType, _, x) = StructTypes.construct(StructTypes.numbertype(), x)
-(c::Converter{CM_Write})(::StructTypes.NumberType, _, x::AbstractFloat) = begin
-    x2 = StructTypes.construct(StructTypes.numbertype(), x)
+(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x) = StructTypes.construct(StructTypes.numbertype(field_type), x)
+(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x::AbstractFloat) = begin
+    x2 = StructTypes.construct(StructTypes.numbertype(field_type), x)
     # If the float value is infinity or NaN, serialize it as a string.
     if c.special_floats_as_strings
         if isinf(x2)
@@ -139,17 +159,21 @@ end
     for (i::Int, el) in enumerate(x)
         push!(vec, c(el, array_el_type(x, i, el)))
     end
+    vec
 end
 (c::Converter{CM_Write})(::StructTypes.DictType, _, x) = Dict(
-    (c(k, String, StrucTypes.StringType()) => c(v, dict_value_type(x, k, value)))
-       for (k, v) in StructTypes.keyvaluepairs(x)
+    let K=typeof(k), V=typeof(v)
+        out_key = string(c(StructTypes.StructType(K), K, k))
+        out_val = c(StructTypes.StructType(V), V, v)
+        out_key => out_val
+    end for (k, v) in StructTypes.keyvaluepairs(x)
 )
-(c::Converter{CM_Write})(::StructTypes.NoStructType, _, x) =
+(c::Converter{CM_Write})(::StructTypes.NoStructType, field_type, x) =
     if isnothing(c.default_struct_type)
         error("No StructType defined for serializing ", typeof(x),
               " (or maybe its original field type)")
     else
-        c(c.default_struct_type, x)
+        c(c.default_struct_type, field_type, x)
     end
 (c::Converter{CM_Write})(::StructTypes.AbstractType, field_type, x) = begin
     subtype_data::NamedTuple = StructTypes.subtypes(field_type)
@@ -168,7 +192,7 @@ end
         )
     end
 end
-(c::Converter{CM_Write})(::StructTypes.CustomStruct, _, x) = c(StructTypes.lower(x))
+(c::Converter{CM_Write})(::StructTypes.CustomStruct, _, x) = c(StructTypes..lower(x))
 (c::Converter{CM_Write})(::Union{StructTypes.Mutable, StructTypes.Struct}, _, x) = begin
     renamed_fields::NTuple = StructTypes.names(typeof(x))
     renamed_julia_fields::NTuple = map(t -> t[1], renamed_fields)
@@ -214,6 +238,25 @@ end
 
 # If deserialized data already satisfies the desired output type, pass it through.
 (c::Converter{CM_Read})(x::T, ::Type{TParent}) where {TParent<:TomlType, T<:TParent} = x
+
+# Support deserializing a float from special strings like "NaN".
+(c::Converter{CM_Read})(x::AbstractString, T::Type{<:AbstractFloat}) = begin
+    if c.special_floats_as_strings
+        xL = lowercase(x)
+        if (xL == "+inf") || (xL == "inf")
+            return convert(T, +Inf)
+        elseif xL == "-inf"
+            return convert(T, -Inf)
+        elseif xL == "nan"
+            return convert(T, NaN)
+        else
+            error("Expected a special string for float (e.x. 'NaN'), got: '", x, "'")
+        end
+    else
+        error("Can't convert a string into a float. Did you mean to enable",
+              " `special_floats_as_strings`?")
+    end
+end
 
 # Support deserializing an enum from an int.
 (c::Converter{CM_Read})(x::Number, T::Type{<:Enum{I}}) where {I<:Integer} = begin
@@ -310,4 +353,26 @@ end
         end
     end
 )
-#TODO:  Mutable/Struct
+(c::Converter{CM_Read})(x::AbstractDict{<:AbstractString, <:Any}, T::Type, ::Union{StructTypes.Mutable, StructTypes.Struct}) = begin
+    renamed_fields::NTuple = StructTypes.names(T)
+    renamed_julia_fields::NTuple = map(t -> t[1], renamed_fields)
+    renamed_toml_fields::NTuple = map(t -> t[2], renamed_fields)
+    function get_field_name(toml_name::Symbol)
+        i = findfirst(n -> (n == toml_name), renamed_toml_fields)
+        return isnothing(i) ? toml_name : renamed_julia_fields[i]
+    end
+
+    fields_exclude = StructTypes.excludes(T)
+
+    fields = Dict{Symbol, Any}()
+    for toml_name in Iterators.map(Symbol, keys(x))
+        field_name = get_field_name(toml_name)
+        if !in(field_name, fields_exclude)
+            fields[field_name] = x[toml_name]
+        end
+    end
+
+    fields_to_set = setdiff(fieldnames(T), fields_exclude)
+    field_values = Iterators.map(f -> get(fields, f, nothing), fields_to_set)
+    return T(field_values...)
+end
