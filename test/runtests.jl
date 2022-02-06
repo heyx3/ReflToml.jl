@@ -84,7 +84,8 @@ end
 @testset "Converter Read basic data" begin
     c = WOML.Converter{CM_Read}(
         null_string = "T_NULL",
-        numbers_can_be_strings = true
+        numbers_can_be_strings = true,
+        bools_can_be_strings = true
     )
 
     @test c(5, Int) === 5
@@ -96,6 +97,14 @@ end
     @test c(s, AbstractString) === s
     @test c("hello", String) == s
     @test c("hello", AbstractString) == s
+
+    @test c("4.5", Any) === 4.5
+    @test c("false", Any) === false
+    
+    @test c("f", Any) === "f"
+    @test c("f", Bool) === false
+    @test c("True", Any) === "True"
+    @test c("True", Bool) === true
 
     @test c([ 4, 5, 6 ], Vector{Int}) == [ 4, 5, 6 ]
     @test c([ 4, 5, 6 ], Vector{Integer}) == [ 4, 5, 6 ]
@@ -111,61 +120,61 @@ end
     @test c("NaN", Float32) === NaN32
     @test c("-Inf", Float64) === -Inf64
     @test c("+Inf", Float16) === +Inf16
-    @test all(t -> t[1] === t[2],
-              zip(c([ "T_NULL", "+Inf", "NaN", -20 ], Vector{Any}),
-                  [ nothing, Inf64, NaN64, -20 ]))
+
+    for (actual, expected) in zip(c([ "T_NULL", "+Inf", "NaN", -20 ], Vector{Any}),
+                                    Any[ nothing, Inf64, NaN64, -20 ])
+        @test actual === expected
+    end
 
     real_d = c(Dict(
-        "T_NULL" => 5,
-        "5" => "T_NULL",
-
         "+Inf" => 70,
         "70" => "+Inf",
 
         "NaN" => 30,
         30 => "NaN"
-    ), Dict{Real, Real})
+    ), Dict{AbstractFloat, AbstractFloat})
     expected_d = Dict(
-        nothing => 5,
-        5 => nothing,
+        +Inf => 70.0,
+        70.0 => +Inf,
 
-        +Inf32 => 70,
-        70 => +Inf32,
-
-        NaN => "hi",
-        "hi" => NaN
+        NaN => 30.0,
+        30.0 => NaN
     )
-    @test (length(real_d) == length(expected_d)) &&
-          (all(pair -> pair in real_d, expected_d))
+    @test length(real_d) == length(expected_d)
+    for expected_pair in expected_d
+        @test haskey(real_d, expected_pair[1])
+        @test real_d[expected_pair[1]] === expected_pair[2]
+    end
 
-    @test c(Dict(
-                "7.5"=>"abcd",
-                "abc" => [ "a", "b", "c" ],
-                "def" => [
-                    [ 1, 2, 3 ],
-                    [ 4, 5, 6 ],
-                    [ 7, 8, 9 ]
-                ],
-                "ghi" => [
-                    Dict("j"=>1),
-                    Dict("j"=>2),
-                    Dict("j"=>3)
-                ]
-            ), Dict{Any, Any}) ==
-          Dict(
-              "7.5"=>"abcd",
-              "abc" => [ "a", "b", "c" ],
-              "def" => [
-                  [ 1, 2, 3 ],
-                  [ 4, 5, 6 ],
-                  [ 7, 8, 9 ]
-              ],
-              "ghi" => [
-                  Dict("j"=>1),
-                  Dict("j"=>2),
-                  Dict("j"=>3)
-              ]
-          )
+    in_d = Dict(
+        "7.5"=>"abcd",
+        "true" => [ "a", "b", "c" ],
+        "def" => [
+            [ 1, 2, 3 ],
+            [ 4, 5, 6 ],
+            [ 7, 8, 9 ]
+        ],
+        "false" => [
+            Dict("j"=>1),
+            Dict("j"=>2),
+            Dict("j"=>3)
+        ]
+    )
+    expected_d = Dict(
+        7.5=>"abcd",
+        true => [ "a", "b", "c" ],
+        "def" => [
+            [ 1, 2, 3 ],
+            [ 4, 5, 6 ],
+            [ 7, 8, 9 ]
+        ],
+        false => [
+            Dict("j"=>1),
+            Dict("j"=>2),
+            Dict("j"=>3)
+        ]
+    )
+    @test c(in_d, Dict{Any, Any}) == expected_d
 end
 
 @testset "Converter Write struct data" begin

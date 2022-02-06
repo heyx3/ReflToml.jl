@@ -220,12 +220,53 @@ end
 # If deserialized data already satisfies the desired output type, pass it through.
 (c::Converter{CM_Read})(x::T, ::Type{TParent}) where {TParent<:TomlType, T<:TParent} = x
 
-# Support deserializing a numbers from a string.
+# If the desired output type is non-specific, try to aggressively parse the incoming data.
+(c::Converter{CM_Read})(x, ::Type{Any}) = x
+(c::Converter{CM_Read})(x::AbstractString, ::Type{Any}) = begin
+    if c.numbers_can_be_strings
+        f = tryparse(Float64, x)
+        if !isnothing(f)
+            return f
+        end
+    end
+
+    if c.bools_can_be_strings
+        if x == "true"
+            return true
+        elseif x == "false"
+            return false
+        end
+    end
+
+    if !isnothing(c.null_string) && (x == c.null_string)
+        return nothing
+    end
+
+    return x
+end
+
+# Support deserializing Symbols from things.
+(c::Converter{CM_Read})(x, ::Type{Symbol}) = Symbol(x)
+
+# Support deserializing a number from a string.
 (c::Converter{CM_Read})(x::AbstractString, T::Type{<:Real}) = begin
     if !c.numbers_can_be_strings
-        error("Can't parse a ", T, " from a ", typeof(x),
-              " unless `numbers_can_be_strings` is enabled")
+        # Was the data supposed to be a number, or was it generic?
+        if T <: Real
+            error("Can't parse a ", T, " from a ", typeof(x),
+                  " unless `numbers_can_be_strings` is enabled")
+        else
+            return x
+        end
     else
+        # Make the parsed type concrete.
+        if T in (Real, AbstractFloat)
+            T = Float64
+        elseif T in (Integer, Signed)
+            T = Int64
+        elseif T == Unsigned
+            T = UInt64
+        end
         return parse(T, x)
     end
 end
@@ -253,9 +294,6 @@ end
     end
 end
 
-# Support deserializing Symbols from things.
-(c::Converter{CM_Read})(x, ::Type{Symbol}) = Symbol(x)
-
 # Support reading the null-string.
 (c::Converter{CM_Read})(x::AbstractString, ::Type{Nothing}) = begin
     if !isnothing(c.null_string) && (x == c.null_string)
@@ -279,16 +317,17 @@ println("#TODO: Read unions")
 (c::Converter{CM_Read})(x, T, ::StructTypes.StringType) = StructTypes.construct(T, x)
 (c::Converter{CM_Read})(x::AbstractVector, T::Type, ::StructTypes.ArrayType) = begin
     # If a specific element type is listed, make sure each element is that desired type.
-    if (Base.IteratorEltype(T) isa Base.HasEltype)
-        TElement = eltype(T)
-        x = map(i -> c(i, TElement), x)
-    end
+    TElement = (Base.IteratorEltype(T) isa Base.HasEltype) ?
+                   eltype(T) :
+                   Any
+    x = map(i -> c(i, TElement), x)
+
     # Call through to the constructor if necessary.
     return (x isa T) ? x : StructTypes.construct(T, x)
 end
 (c::Converter{CM_Read})(x::AbstractDict, T::Type, ::StructTypes.DictType) = StructTypes.construct(T, x)
-(c::Converter{CM_Read})(x::AbstractDict{<:AbstractString}, T::Type{<:AbstractDict{K, V}}, ::StructTypes.DictType) where {K<:TomlTypePlain, V} = begin
-    # Convert the incoming key type (always strings in TOML) to the desired type.
+(c::Converter{CM_Read})(x::AbstractDict, T::Type{<:AbstractDict{K, V}}, ::StructTypes.DictType) where {K, V} = begin
+    # Convert the incoming key type to the desired type.
     # Do the same for values.
     return T(c(k, K) => c(v, V) for (k, v) in x)
 end
