@@ -244,6 +244,8 @@ end
 
     return x
 end
+(c::Converter{CM_Read})(x::AbstractVector, ::Type{Any}) = map(e -> c(e, Any), x)
+(c::Converter{CM_Read})(x::AbstractDict, ::Type{Any}) = Dict((c(k, Any) => c(v, Any)) for (k, v) in x)
 
 # Support deserializing Symbols from things.
 (c::Converter{CM_Read})(x, ::Type{Symbol}) = Symbol(x)
@@ -386,10 +388,10 @@ end
     fields_exclude = StructTypes.excludes(T)
 
     fields = Dict{Symbol, Any}()
-    for toml_name in Iterators.map(Symbol, keys(x))
-        field_name = get_field_name(toml_name)
+    for toml_name in keys(x)
+        field_name = get_field_name(Symbol(toml_name))
         if !in(field_name, fields_exclude)
-            fields[field_name] = x[toml_name]
+            fields[field_name] = c(x[toml_name], fieldtype(T, field_name))
         end
     end
 
