@@ -6,7 +6,7 @@ This package is built directly off Julia's TOML module; it essentially just conv
 
 The goals of this project are:
   * Make the use of TOML convenient for data serialization/deserialization. JSON has too many annoying problems for my work (most of all, the lack of multiline strings), and Julia doesn't have many other well-supported alternatives, especially which use reflection.
-  * Prioritize convenience and simplicity over performance. I'm not a serialization expert, and I have other things I want to work on, so don't expect this package to be tightly-optimized. In fact, it's quite *un*-optimized. For example, there's no specialization or @generated implementation for serializing different structs. On the bright side, compilation times will be small.
+  * Prioritize convenience and simplicity over performance. I'm not a serialization expert, and I have other things I want to work on, so don't expect this package to be tightly-optimized. In fact, it's quite *un*-optimized. For example, there's no specialization or @generated implementation for serializing different structs. It's particularly slow when deserializing a large `Union` of types.
 
 ## Data types
 
@@ -16,7 +16,7 @@ The following types of data are natively serializable by TOML: `AbstractString`,
 * Null-like types (i.e. `nothing` and `missing`) are not supported in TOML, but they are in WOML by writing them as a special string, like `"null"`.
 * The root object in TOML must be a dictionary (as opposed to JSON, where you can define an array or even a primitive value), but WOML adds special behavior to allow you to do this, by wrapping the data into a dictionary.
 * You may not mix array elements which are plain data, and elements which are themselves dictionaries. For example, you can serialize `[ 4, "5", [ :six, 7.0 ] ]`, and `[ Dict(:a=>1), Dict(:b=>2) ]`, but not `[ 4, Dict(:a=>5) ]`. This is because it has 2 entirely different syntaxes for simple arrays vs. dictionary arrays. This error is not actually caught when writing such a problematic array; TOML.jl will simply emit invalid TOML.
-* All dictionary keys are converted to strings, so their type data will get lost. For example, the keys `Inf16`, `Inf32`, and `"+Inf"` will all step on each other when converted into TOML.
+* All dictionary keys are converted to strings, so their type data will get lost. For example, the keys `Inf16`, `Inf32`, and `"+Inf"` will all step on each other when converted into TOML (although the last one won't if `numbers_can_be_strings` is disabled, as it will remain a String).
 
 ## Converter
 
