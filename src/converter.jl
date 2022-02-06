@@ -2,6 +2,7 @@
 @enum ConverterModes CM_Write CM_Read
 
 println("#TODO: Handle `missing` like `nothing`")
+println("#TODO: Handle Sets")
 println("#TODO: Handle rationals (as string or as Float64?)")
 println("#TODO: Mark specific struct fields as being serialized/deserialized with their literal type, not their declared type, to handle massive unions like `Contiguous{T}`")
 println("#TODO: support 'kwargs' thing from StructTypes")
@@ -113,10 +114,20 @@ end
     end
 end
 
-println("#TODO: writing unions")
-
 # In most cases, check the type of the value and dispatch based on StructType.
 (c::Converter{CM_Write})(x) = c(x, typeof(x))
+(c::Converter{CM_Write})(x, field_type::Union) = begin
+    # Normally, we can just write the precise value of the field.
+    # However, if one of the union types is an abstract type,
+    #    we need to make sure it gets serialized with type information.
+    for T in union_parse_order(field_type)
+        if (StructTypes.StructType(T) isa StructTypes.AbstractType) && (x isa T)
+            return c(x, T)
+        end
+    end
+
+    return c(x, typeof(x))
+end
 (c::Converter{CM_Write})(x, field_type) = let field_stype = StructTypes.StructType(field_type)
     # If the field is an abstract type, then write it as an abstract value.
     if field_stype isa StructTypes.AbstractType
@@ -217,38 +228,65 @@ end
 #     Reading     #
 ###################
 
-# If deserialized data already satisfies the desired output type, pass it through.
-(c::Converter{CM_Read})(x::T, ::Type{TParent}) where {TParent<:TomlType, T<:TParent} = x
-
-# If the desired output type is non-specific, try to aggressively parse the incoming data.
-(c::Converter{CM_Read})(x, ::Type{Any}) = x
-(c::Converter{CM_Read})(x::AbstractString, ::Type{Any}) = begin
-    if c.numbers_can_be_strings
-        f = tryparse(Float64, x)
-        if !isnothing(f)
-            return f
+# A catch-all for logic that doesn't fit into Julia's overload resolution order.
+(c::Converter{CM_Read})(x::TIn, ::Type{TOut}) where {TIn, TOut} = begin
+    # For Union types, try each element of the union individually.
+    if TOut isa Union
+        for T in union_parse_order(TOut)
+            try_val = union_try_parse(c, x, T)
+            if try_val isa Some
+                @assert(try_val isa Some{<:T},
+                        "WOML.union_try_parse() somehow turned a $T into a $(typeof(something(try_val))): $try_val")
+                return something(try_val)
+            end
         end
-    end
+        error("Unable to parse a ", typeof(x),
+              " into any of the following types: ", union_types(TOut),
+              ". The precise value was: ", x)
+    # If the output type is non-specific, try to aggressively parse the incoming data.
+    elseif TOut == Any
+        if x isa AbstractString
+            if c.numbers_can_be_strings
+                f = tryparse(Float64, x)
+                if !isnothing(f)
+                    return (isinteger(f) && (f <= typemax(Int)) && (f >= typemin(Int))) ?
+                            Int(f) :
+                            f
+                end
+            end
 
-    if c.bools_can_be_strings
-        if x == "true"
-            return true
-        elseif x == "false"
-            return false
+            if c.bools_can_be_strings
+                if x == "true"
+                    return true
+                elseif x == "false"
+                    return false
+                end
+                # Don't try the more expansive options like "f", or "True",
+                #    as it feels a bit too eager.
+            end
+
+            if x == c.null_string
+                return nothing
+            end
         end
+        return x
+    elseif TOut isa Union{Dict{Any, Any}, Dict{<:AbstractString, Any}}
+        K = eltype(TOut).parameters[1]
+        return Dict( (c(k, K) => c(v, Any)) for (k, v) in x )
+    elseif x isa Vector{Any}
+        return map(e -> c(e, Any), x)
+    # If the data already satisfies the desired output type, pass it through.
+    elseif TIn <: TOut
+        return x
+    # If the desired type is a Symbol, construct it.
+    elseif TOut == Symbol
+        return StructTypes.construct(Symbol, x)
     end
 
-    if !isnothing(c.null_string) && (x == c.null_string)
-        return nothing
-    end
-
-    return x
+    # If nothing is special about this case, dispatch based on the desired type's `StructType`.
+    return c(x, TOut, StructTypes.StructType(TOut))
 end
-(c::Converter{CM_Read})(x::AbstractVector, ::Type{Any}) = map(e -> c(e, Any), x)
-(c::Converter{CM_Read})(x::AbstractDict, ::Type{Any}) = Dict((c(k, Any) => c(v, Any)) for (k, v) in x)
 
-# Support deserializing Symbols from things.
-(c::Converter{CM_Read})(x, ::Type{Symbol}) = Symbol(x)
 
 # Support deserializing a number from a string.
 (c::Converter{CM_Read})(x::AbstractString, T::Type{<:Real}) = begin
@@ -305,11 +343,6 @@ end
         c(x, Nothing, StructTypes.StructType(Nothing))
     end
 end
-
-println("#TODO: Read unions")
-
-# In all other cases, dispatch based on the desired type's `StructType`.
-(c::Converter{CM_Read})(x, T::Type) = c(x, T, StructTypes.StructType(T))
 
 (c::Converter{CM_Read})(x, T, ::StructTypes.NullType) = error(
     "Cannot convert a ", typeof(x), " to `Nothing`"

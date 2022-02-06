@@ -1,6 +1,25 @@
 using Test, TOML, StructTypes
 using WOML
 
+@testset "Union utilities" begin
+    @test Set(WOML.union_types(Union{Int, Float64, String, Vector{Float64}})) ==
+          Set([ Int, Float64, String, Vector{Float64} ])
+    println("#TODO: Adding a type like `Dict{<:AbstractString, <:Integer} breaks this. Why?")
+
+    @test WOML.union_parse_order(Union{Int, Float64, String, Vector, Dict}) ==
+          [ Int, Float64, String, Dict, Vector ]
+
+    # Test simple overloads of union_try_parse(), i.e. those which don't need a Converter.
+    @test WOML.union_try_parse(nothing, nothing, Nothing) === Some(nothing)
+    @test WOML.union_try_parse(nothing, 5, Int) === Some(5)
+    @test WOML.union_try_parse(nothing, 5.0, Float64) === Some(5.0)
+    @test WOML.union_try_parse(nothing, 5.23, Float64) === Some(5.23)
+    @test WOML.union_try_parse(nothing, 5.0, Int8) === Some(Int8(5))
+    @test WOML.union_try_parse(nothing, 5.5, Float16) === Some(Float16(5.5))
+    @test WOML.union_try_parse(nothing, "hi", Symbol) === Some(:hi)
+    @test WOML.union_try_parse(nothing, 5, Symbol) === Some(Symbol(5))
+    @test WOML.union_try_parse(nothing, 5.23, Int8) === nothing
+end
 
 @testset "Converter Write basic data" begin
     c = WOML.Converter{CM_Write}(
@@ -51,6 +70,8 @@ using WOML
               "NaN" => "hi",
               "hi" => "NaN"
           )
+
+    @test c(5, Union{Int, Float64, Vector, Dict{String, Symbol}}) === 5
 
     @test c(Dict(
                 7.5 => :abcd,
@@ -122,6 +143,15 @@ end
     @test c("-Inf", Float64) === -Inf64
     @test c("+Inf", Float16) === +Inf16
 
+    # Test the overloads of union_try_parse() that do use a converter.
+    @test WOML.union_try_parse(c, "abc", Int) === nothing
+    @test WOML.union_try_parse(c, "abc", Float64) === nothing
+    @test WOML.union_try_parse(c, "4.2", Float64) === Some(4.2)
+    @test WOML.union_try_parse(c, "-8.0", Int16) === Some(Int16(-8))
+    @test WOML.union_try_parse(c, "T_NULL", Nothing) === Some(nothing)
+    @test WOML.union_try_parse(c, "abcd", Nothing) === nothing
+    @test WOML.union_try_parse(c, "abcd", Nothing) === nothing
+
     for (actual, expected) in zip(c([ "T_NULL", "+Inf", "NaN", -20 ], Vector{Any}),
                                     Any[ nothing, Inf64, NaN64, -20 ])
         @test actual === expected
@@ -179,6 +209,18 @@ end
 
     @test c(Dict("a"=>"b", "c"=>"d"), Dict{Symbol, Symbol}) ==
           Dict(:a=>:b, :c=>:d)
+
+
+    @test c(5, Union{Int, String}) === 5
+    @test c(5.6, Union{Int, Float64}) === 5.6
+    @test c(5.0, Union{Int, Float64}) === 5
+    @test c("hey", Union{Symbol, String}) === :hey
+    @test c("hey", Union{String, Int}) == "hey"
+    @test c("5", Union{String, Int}) === 5
+    @test c("-Inf", Union{String, Int, Float32}) === -Inf32
+
+    @test c([ 2, 3, 4 ], Union{String, Vector{Int}, Vector{Float64}}) ==
+          [ 2, 3, 4 ]
 end
 
 @testset "Converter Write struct data" begin
@@ -268,7 +310,9 @@ end
           SSr(-Inf64, Sr("x\"y\"z-3"), Int[ ], nothing)
 end
 
+println("#TODO: Test tuples")
+println("#TODO: Test enums")
 println("#TODO: Test non-default converter settings")
 println("#TODO: Test abstract types")
 println("#TODO: Test custom types")
-println("#TODO: Add union tests to all test sets")
+println("#TODO: Add thorough union tests everywhere")

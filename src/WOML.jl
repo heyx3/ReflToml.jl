@@ -8,7 +8,8 @@ module WOML
 using Dates
 using TOML, StructTypes
 
-include("utils.jl")
+include("toml-type.jl")
+include("unions.jl")
 include("converter.jl")
 
 
