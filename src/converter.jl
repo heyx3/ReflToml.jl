@@ -54,12 +54,20 @@ end
 
 "
 For serialization of a `StructTypes.ArrayType`, this provides the serialized type of each element.
-By default, for any `AbstractArray{T}`, it'll return `T`.
-For other types, or an `AbstractArray{Any}`, it'll return each value's exact type.
+By default, for any `AbstractArray{T}, it'll return `T`,
+    and for tuples, it'll return each element's expected type.
+For other types, or if the element type if `Any`, it'll fall back to each value's exact type.
 
 For deserialization, follow the `StructTypes.ArrayType` documentation.
 "
 array_el_type(a::AbstractVector, index::Int, element) = let et = eltype(a)
+    if et == Any
+        typeof(element)
+    else
+        et
+    end
+end
+array_el_type(@specialize(t::Tuple), index::Int, element) = let et = typeof(t).parameters[index]
     if et == Any
         typeof(element)
     else
@@ -268,13 +276,17 @@ end
             if x == c.null_string
                 return nothing
             end
+        elseif x isa AbstractDict
+            return c(x, Dict{Any, Any})
+        elseif x isa AbstractVector
+            return c(x, Vector{Any})
         end
         return x
-    elseif TOut isa Union{Dict{Any, Any}, Dict{<:AbstractString, Any}}
+    elseif TOut <: Union{Dict{Any, Any}, Dict{<:AbstractString, Any}}
         K = eltype(TOut).parameters[1]
         return Dict( (c(k, K) => c(v, Any)) for (k, v) in x )
-    elseif x isa Vector{Any}
-        return map(e -> c(e, Any), x)
+    elseif TOut == Vector{Any}
+        return map(e -> c(e, Any), x) 
     # If the data already satisfies the desired output type, pass it through.
     elseif TIn <: TOut
         return x
@@ -350,8 +362,18 @@ end
 (c::Converter{CM_Read})(x, T, ::StructTypes.BoolType) = StructTypes.construct(T, x)
 (c::Converter{CM_Read})(x, T, ::StructTypes.NumberType) = StructTypes.construct(T, convert(StructTypes.numbertype(T), x))
 (c::Converter{CM_Read})(x, T, ::StructTypes.StringType) = StructTypes.construct(T, x)
-(c::Converter{CM_Read})(x::AbstractVector, T::Type, ::StructTypes.ArrayType) = begin
-    # If a specific element type is listed, make sure each element is that desired type.
+(c::Converter{CM_Read})(x::AbstractVector, T::Type{<:Tuple}, ::StructTypes.ArrayType) = begin
+    if length(x) != length(T.parameters)
+        error("Can't parse a ", length(T.parameters), "-tuple from an array of ",
+              length(x), " elements")
+    else
+        return tuple((c(e, T.parameters[i]) for (i, e) in enumerate(x))...)::T
+    end
+end
+(c::Converter{CM_Read})(x::AbstractVector, T, ::StructTypes.ArrayType) = begin
+    # Process each element to be as close to the desired type as possible.
+    # Even if the element type is Any, we'd like to aggresively parse things
+    #    like numbers/bools as the user configured.
     TElement = (Base.IteratorEltype(T) isa Base.HasEltype) ?
                    eltype(T) :
                    Any
@@ -409,6 +431,7 @@ end
         end
     end
 )
+using InteractiveUtils
 (c::Converter{CM_Read})(x::AbstractDict{<:AbstractString, <:Any}, T::Type, ::Union{StructTypes.Mutable, StructTypes.Struct}) = begin
     renamed_fields::NTuple = StructTypes.names(T)
     renamed_julia_fields::NTuple = map(t -> t[1], renamed_fields)

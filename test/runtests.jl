@@ -2,10 +2,25 @@ using Test, TOML, StructTypes
 using WOML
 
 @testset "Union utilities" begin
+    @test WOML.union_types(Float32) == (Float32, )
+    @test Set(WOML.union_types(Union{Int64, Float32})) ==
+          Set([ Int64, Float32 ])
+    @test Set(WOML.union_types(Union{Float32, Int64, String})) ==
+          Set([ Int64, Float32, String])
     @test Set(WOML.union_types(Union{Int, Float64, String, Vector{Float64}})) ==
           Set([ Int, Float64, String, Vector{Float64} ])
     println("#TODO: Adding a type like `Dict{<:AbstractString, <:Integer} breaks this. Why?")
 
+    @test WOML.union_parse_order(Union{Int, Float64}) ==
+            WOML.union_parse_order(Union{Float64, Int}) ==
+            [ Int, Float64]
+    @test WOML.union_parse_order(Union{Float32, Int64, String}) ==
+            [ Int64, Float32, String ]
+    @test WOML.union_parse_order(Union{Int, String, Float64}) ==
+            WOML.union_parse_order(Union{Float64, Int, String}) ==
+            WOML.union_parse_order(Union{String, Float64, Int}) ==
+            WOML.union_parse_order(Union{Int, Float64, String}) ==
+            [ Int, Float64, String ]
     @test WOML.union_parse_order(Union{Int, Float64, String, Vector, Dict}) ==
           [ Int, Float64, String, Dict, Vector ]
 
@@ -33,6 +48,9 @@ end
     s = "hello"
     @test c(s) === s
     @test c(:hello) == s
+
+    @test c((4, 5.5, true, "seven", :eight)) ==
+          [ 4, 5.5, true, "seven", "eight" ]
 
     @test c([ 4, 5, 6 ]) == [ 4, 5, 6 ]
     @test c(Dict(3=>"hi", 5=>:hey_there)) ==
@@ -85,7 +103,10 @@ end
                     Dict(:j=>1),
                     Dict(:j=>2),
                     Dict(:j=>3)
-                ]
+                ],
+                "jkl" => (
+                    4.5, 7, "twenty", :seven_again
+                )
             )) ==
             Dict(
                 "7.5"=>"abcd",
@@ -99,6 +120,9 @@ end
                     Dict("j"=>1),
                     Dict("j"=>2),
                     Dict("j"=>3)
+                ],
+                "jkl" => [
+                    4.5, 7, "twenty", "seven_again"
                 ]
             )
     @test c(Dict(:a=>:b, :c=>:d)) == Dict("a"=>"b", "c"=>"d")
@@ -113,6 +137,9 @@ end
     @test c(5, Int) === 5
     @test c(5, Float32) === Float32(5)
     @test c(true, Bool) === true
+
+    @test c([1, true, 3.5, "four", :five], Tuple{Int, Bool, Float16, Symbol, String}) ==
+          (1, true, Float16(3.5), :four, "five")
 
     s = "hello"
     @test c(s, String) === s
@@ -209,7 +236,9 @@ end
 
     @test c(Dict("a"=>"b", "c"=>"d"), Dict{Symbol, Symbol}) ==
           Dict(:a=>:b, :c=>:d)
-
+    @test c(Dict("a" => [ 4, 5, 6 ], "b" => [-3, -1, 0 ]),
+                 Dict{Symbol, NTuple{3, Int}}) ==
+          Dict(:a => (4, 5, 6), :b => (-3, -1, 0))
 
     @test c(5, Union{Int, String}) === 5
     @test c(5.6, Union{Int, Float64}) === 5.6
@@ -310,7 +339,6 @@ end
           SSr(-Inf64, Sr("x\"y\"z-3"), Int[ ], nothing)
 end
 
-println("#TODO: Test tuples")
 println("#TODO: Test enums")
 println("#TODO: Test non-default converter settings")
 println("#TODO: Test abstract types")

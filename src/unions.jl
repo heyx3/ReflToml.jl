@@ -1,6 +1,11 @@
 "Gets a tuple of the types in a Union."
 @inline union_types(T) = (T, )
-@inline union_types(u::Union) = (u.a, union_types(u.b)...)
+@inline function union_types(u::Union)
+    # Supposedly, 'u.a' is the first type and 'u.b' is a Union of the other types.
+    # However, sometimes a is the Union, and b is the type.
+    # So I pass both sides through 'union_types()' to be sure.
+    (union_types(u.a)..., union_types(u.b)...)
+end
 
 
 "
@@ -55,6 +60,12 @@ union_try_parse(_, f::Real, I::Type{<:Integer}) =
     (isinteger(f) && (f >= typemin(I)) && (f <= typemax(I)) && hasmethod(I, tuple(typeof(f)))) ?
         Some(I(f)) :
         nothing
+union_try_parse(_, s::AbstractString, N::Type{<:Real}) = let parsed = tryparse(N, s)
+    return isnothing(parsed) ? nothing : Some(parsed)
+end
+union_try_parse(_, s::AbstractString, I::Type{<:Integer}) = let parsed = tryparse(Float64, s)
+    return (!isnothing(parsed) && isinteger(parsed)) ? Some(I(parsed)) : nothing
+end
 union_try_parse(_, x, ::Type{Symbol}) =
     hasmethod(Symbol, tuple(typeof(x))) ?
         Some(Symbol(x)) :
