@@ -34,6 +34,7 @@ const MAX_BUILTIN_UNION_PRIORITY = union_ordering(Vector)
 
 "Organizes the types in a union by their `union_ordering()`."
 @inline union_parse_order(U::Union) = sort(collect(union_types(U)), by=union_ordering)
+union_parse_order(T::Type) = (T, )
 #NOTE: originally I used TupleTools.sort(), but it breaks
 #    for unions containing DataTypes and UnionAll's, because
 #    those are two different types of things, so the tuple isn't homogenous.

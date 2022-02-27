@@ -54,40 +54,53 @@ end
 
 "
 For serialization of a `StructTypes.ArrayType`, this provides the serialized type of each element.
-By default, for any `AbstractArray{T}, it'll return `T`,
-    and for tuples, it'll return each element's expected type.
-For other types, or if the element type if `Any`, it'll fall back to each value's exact type.
-
 For deserialization, follow the `StructTypes.ArrayType` documentation.
+
+The first three parameters are the collection, index, and specific element being serialized.
+The last parameter is the desired output type; in many cases it's equal to `typeof(data)`,
+    but the user might want to, for example, serialize a list of enums as a `Vector{Int}`.
+This type should be prioritized over the data's actual type.
+
+By default, this will usually return `eltype(desired_type)`,
+    or for tuples, the desired type of the specific element.
+If that type is `Any`, then it will try something similar with the collection's actual type.
+If that type is also `Any`, then it will return the exact type of the element.
 "
-array_el_type(a::AbstractVector, index::Int, element) = let et = eltype(a)
-    if et == Any
-        typeof(element)
+function array_el_type(data, index::Int, element, desired_type)
+    if (desired_type <: Tuple) && (desired_type.parameters[index] != Any)
+        return desired_type.parameters[index]
+    elseif eltype(desired_type) != Any
+        return eltype(desired_type)
+    elseif (data isa Tuple) && (typeof(data).parameters[index] != Any)
+        return typeof(data).parameters[index]
+    elseif eltype(data) != Any
+        return eltype(data)
     else
-        et
+        return typeof(element)
     end
 end
-array_el_type(@specialize(t::Tuple), index::Int, element) = let et = typeof(t).parameters[index]
-    if et == Any
-        typeof(element)
-    else
-        et
-    end
-end
-array_el_type(::AbstractArray{T, N}, index::Int, element) where {T, N} = error(
-    "WOML currently doesn't support multi-dimensional arrays."
-)
 
 "
-For serialization/deserialization of a `StructTypes.DictType`,
+For serialization of a `StructTypes.DictType`,
     this provides the type of its elements.
-Default behavior is to try calling `eltype()`, expecting to get a `Pair`.
-If that doesn't work, or the value-type is `Any`, then it will be replaced
-    with each value's exact type.
+
+The first three parameters are the dictionary, key, and specific value being serialized.
+The last parameter is the desired output type;
+    in many cases it's equal to `typeof(data)`, but the user might want to, for example,
+    serialize a dictionary of enum values as a dictionary of Int values.
+The desired type should be prioritized over the data's actual type.
+
+Default behavior is to check `eltype(desired_type)`, expecting to get some `Pair{K, V}`,
+    and return that `V`.
+If the element type isn't a `Pair`, or the element type is `Any`,
+    then the actual dictionary's value-type is used instead.
+If that also fails, then the value's exact type will be returned.
 "
-dict_value_type(d, key, value) = let et = eltype(d)
-    if (et <: Pair) && (et.types[2] != Any)
-        return et.types[2]
+function dict_value_type(dict, key, value, desired_type)
+    if (eltype(desired_type) <: Pair) && (eltype(desired_type).types[2] != Any)
+        return eltype(desired_type).types[2]
+    elseif (eltype(dict) <: Pair) && (eltype(dict).types[2] != Any)
+        return eltype(dict).types[2]
     else
         return typeof(value)
     end
@@ -122,61 +135,66 @@ end
     end
 end
 
-# In most cases, check the type of the value and dispatch based on StructType.
-(c::Converter{CM_Write})(x) = c(x, typeof(x))
-(c::Converter{CM_Write})(x, field_type::Union) = begin
-    # Normally, we can just write the precise value of the field.
-    # However, if one of the union types is an abstract type,
-    #    we need to make sure it gets serialized with type information.
-    for T in union_parse_order(field_type)
-        if (StructTypes.StructType(T) isa StructTypes.AbstractType) && (x isa T)
-            return c(x, T)
+# Get the StructType of the data and dispatch based on that.
+# If it has a partcular expected type (e.x. its declared type in a struct),
+#    look out for some special cases, like abstract types.
+(c::Converter{CM_Write})(x) = c(x, StructTypes.StructType(x), typeof(x))
+(c::Converter{CM_Write})(x, expected_type) = begin
+    # Get the type of X according to its declaration
+    #    (meaning the 'T' in 'x::T', or in 'Vector{T}', or in 'Dict{T, V}', etc).
+    # Note that it could be a union of types.
+    types::Tuple = union_types(expected_type)
+    x_type_idx = findfirst(t -> x isa t, types)
+
+    # If the input data isn't any of the declared types
+    #    (e.x. it's an enum and the declared type is Int),
+    #    try writing it as each type.
+    if isnothing(x_type_idx)
+        for T in union_parse_order(expected_type)
+            try
+                return c(x, StructTypes.StructType(T), expected_type)
+            catch e
+                # Left here in case debugging is needed.
+                #@warn "Parse failed: $T" exception=(e, catch_backtrace())
+            end
         end
-    end
-
-    return c(x, typeof(x))
-end
-(c::Converter{CM_Write})(x, field_type) = let field_stype = StructTypes.StructType(field_type)
-    # If the field is an abstract type, then write it as an abstract value.
-    if field_stype isa StructTypes.AbstractType
-        c(field_stype, field_type, x)
-    # Otherwise, write the field as its exact value.
+        error("Couldn't write data of type ", typeof(x), " as a ", expected_type)
     else
-        c(StructTypes.StructType(x), field_type, x)
+        T = types[x_type_idx]
+        return c(x, StructTypes.StructType(T), expected_type)
     end
 end
 
-(c::Converter{CM_Write})(::StructTypes.NullType, _, x) =
+(c::Converter{CM_Write})(x, ::StructTypes.NullType, _) =
     if isnothing(c.null_string)
         error("There is no way to write a `nothing` value, as the `null_string` parameter wasn't set")
     else
         c.null_string
     end
-(c::Converter{CM_Write})(::StructTypes.BoolType, _, x) = Bool(x)
-(c::Converter{CM_Write})(::StructTypes.NumberType, field_type, x) = c(StructTypes.construct(StructTypes.numbertype(field_type), x))
-(c::Converter{CM_Write})(::StructTypes.StringType, _, x) = string(x)
-(c::Converter{CM_Write})(::StructTypes.ArrayType, field_type, x) = let vec = [ ]
+(c::Converter{CM_Write})(x, ::StructTypes.BoolType, _) = Bool(x)
+(c::Converter{CM_Write})(x, ::StructTypes.NumberType, _) = c(StructTypes.construct(StructTypes.numbertype(typeof(x)), x))
+# Special behavioir for enums: they should be written as ints, not Float64.
+(c::Converter{CM_Write})(x::Enum{I}, ::StructTypes.NumberType, _) where {I} = c(StructTypes.construct(I, x))
+(c::Converter{CM_Write})(x, ::StructTypes.StringType, _) = string(x)
+(c::Converter{CM_Write})(x, ::StructTypes.ArrayType, desired_type) = let vec = [ ]
     for (i::Int, el) in enumerate(x)
-        push!(vec, c(el, array_el_type(x, i, el)))
+        push!(vec, c(el, array_el_type(x, i, el, desired_type)))
     end
     vec
 end
-(c::Converter{CM_Write})(::StructTypes.DictType, _, x) = Dict(
-    let K=typeof(k), V=typeof(v)
-        out_key = string(c(StructTypes.StructType(K), K, k))
-        out_val = c(StructTypes.StructType(V), V, v)
-        out_key => out_val
-    end for (k, v) in StructTypes.keyvaluepairs(x)
+(c::Converter{CM_Write})(x, ::StructTypes.DictType, desired_type) = Dict(
+    (string(c(k)) => c(v, dict_value_type(x, k, v, desired_type)))
+      for (k, v) in StructTypes.keyvaluepairs(x)
 )
-(c::Converter{CM_Write})(::StructTypes.NoStructType, field_type, x) =
+(c::Converter{CM_Write})(x, ::StructTypes.NoStructType, _) =
     if isnothing(c.default_struct_type)
         error("No StructType defined for serializing ", typeof(x),
               " (or maybe its original field type)")
     else
-        c(c.default_struct_type, field_type, x)
+        c(x, c.default_struct_type)
     end
-(c::Converter{CM_Write})(::StructTypes.AbstractType, field_type, x) = begin
-    subtype_data::NamedTuple = StructTypes.subtypes(field_type)
+(c::Converter{CM_Write})(x, ::StructTypes.AbstractType, expected_type) = begin
+    subtype_data::NamedTuple = StructTypes.subtypes(expected_type)
     subtype_strings::ConstVector{Symbol} = keys(subtype_data)
     subtype_types::ConstVector{Type} = values(subtype_data)
 
@@ -184,7 +202,7 @@ end
 
     if isnothing(subtype_idx)
         error("Object type ", typeof(x),
-              " is not listed as a `StructTypes.subtypes()` of ", field_type)
+              " is not listed as a `StructTypes.subtypes()` of ", expected_type)
     else
         return Dict(
             "type" => subtype_strings[subtype_idx],
@@ -192,8 +210,8 @@ end
         )
     end
 end
-(c::Converter{CM_Write})(::StructTypes.CustomStruct, _, x) = c(StructTypes..lower(x))
-(c::Converter{CM_Write})(::Union{StructTypes.Mutable, StructTypes.Struct}, _, x) = begin
+(c::Converter{CM_Write})(x, ::StructTypes.CustomStruct, _) = c(StructTypes.lower(x))
+(c::Converter{CM_Write})(x, ::Union{StructTypes.Mutable, StructTypes.Struct}, _) = begin
     renamed_fields::NTuple = StructTypes.names(typeof(x))
     renamed_julia_fields::NTuple = map(t -> t[1], renamed_fields)
     renamed_output_fields::NTuple = map(t -> t[2], renamed_fields)

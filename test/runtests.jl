@@ -1,6 +1,10 @@
 using Test, TOML, StructTypes
 using WOML
 
+@testset "WOML" begin
+
+@enum EE Aa Bb Cc
+
 @testset "Union utilities" begin
     @test WOML.union_types(Float32) == (Float32, )
     @test Set(WOML.union_types(Union{Int64, Float32})) ==
@@ -49,8 +53,15 @@ end
     @test c(s) === s
     @test c(:hello) == s
 
-    @test c((4, 5.5, true, "seven", :eight)) ==
-          [ 4, 5.5, true, "seven", "eight" ]
+    @test c(Aa::EE) == "Aa"
+    @test c(Aa, Int) == Int(Aa)
+    @test c(Bb::EE) == "Bb"
+    @test c(Bb, Int) == Int(Bb)
+    @test c(Cc::EE) == "Cc"
+    @test c(Cc, Int) == Int(Cc)
+
+    @test c((4, 5.5, true, "seven", :eight, Bb)) ==
+          [ 4, 5.5, true, "seven", "eight", "Bb" ]
 
     @test c([ 4, 5, 6 ]) == [ 4, 5, 6 ]
     @test c(Dict(3=>"hi", 5=>:hey_there)) ==
@@ -76,7 +87,10 @@ end
                 70 => +Inf32,
 
                 NaN => "hi",
-                "hi" => NaN
+                "hi" => NaN,
+
+                Bb => Aa,
+                Cc => Bb
           )) ==
           Dict(
               "T_NULL" => 5,
@@ -86,10 +100,15 @@ end
               "70" => "+Inf",
 
               "NaN" => "hi",
-              "hi" => "NaN"
+              "hi" => "NaN",
+
+              "Bb" => "Aa",
+              "Cc" => "Bb"
           )
 
-    @test c(5, Union{Int, Float64, Vector, Dict{String, Symbol}}) === 5
+    @test c(5, Union{Int, Float64, EE, Vector, Dict{String, Symbol}}) === 5
+    @test c(Aa, Union{Int, Float64, String, EE}) == "Aa"
+    @test c([ Aa, Bb, Aa, Cc ], Vector{Int}) == map(Int, [ Aa, Bb, Aa, Cc ])
 
     @test c(Dict(
                 7.5 => :abcd,
@@ -105,7 +124,7 @@ end
                     Dict(:j=>3)
                 ],
                 "jkl" => (
-                    4.5, 7, "twenty", :seven_again
+                    4.5, 7, "twenty", :seven_again, Aa
                 )
             )) ==
             Dict(
@@ -122,7 +141,7 @@ end
                     Dict("j"=>3)
                 ],
                 "jkl" => [
-                    4.5, 7, "twenty", "seven_again"
+                    4.5, 7, "twenty", "seven_again", "Aa"
                 ]
             )
     @test c(Dict(:a=>:b, :c=>:d)) == Dict("a"=>"b", "c"=>"d")
@@ -138,14 +157,18 @@ end
     @test c(5, Float32) === Float32(5)
     @test c(true, Bool) === true
 
-    @test c([1, true, 3.5, "four", :five], Tuple{Int, Bool, Float16, Symbol, String}) ==
-          (1, true, Float16(3.5), :four, "five")
-
     s = "hello"
     @test c(s, String) === s
     @test c(s, AbstractString) === s
     @test c("hello", String) == s
     @test c("hello", AbstractString) == s
+
+    @test c("Aa", EE) == Aa
+    @test c("Bb", EE) == Bb
+    @test c("Cc", EE) == Cc
+    @test c(Int(Aa), EE) == Aa
+    @test c(Int(Bb), EE) == Bb
+    @test c(Int(Cc), EE) == Cc
 
     @test c("4.5", Any) === 4.5
     @test c("false", Any) === false
@@ -159,8 +182,24 @@ end
     @test c([ 4, 5, 6 ], Vector{Integer}) == [ 4, 5, 6 ]
     @test c([ 4, 5, 6 ], Vector{Real}) == [ 4, 5, 6 ]
 
+    @test c([ "Aa", "Cc", "Bb", "Aa", "Bb" ], Vector{EE}) ==
+          [ Aa, Cc, Bb, Aa, Bb ]
+
+    @test c([1, true, 3.5, "four", :five], Tuple{Int, Bool, Float16, Symbol, String}) ==
+          (1, true, Float16(3.5), :four, "five")
+
     @test c(Dict("3"=>"hi", "5"=>"hey_there"), Dict{Int, Symbol}) ==
           Dict(3=>:hi, 5=>:hey_there)
+    @test c(Dict(
+                "Aa" => [4, 5],
+                "Bb" => [2, 4],
+                "Cc" => [10, 11]
+            ), Dict{EE, NTuple{2, Int}}) ==
+           Dict(
+               Aa => (4, 5),
+               Bb => (2, 4),
+               Cc => (10, 11)
+           )
 
     @test c([ 3, 4, [ 1, 2, 3 ], 5, 6, 7 ], Vector{Any}) ==
             [ 3, 4, [ 1, 2, 3 ], 5, 6, 7 ]
@@ -169,6 +208,7 @@ end
     @test c("NaN", Float32) === NaN32
     @test c("-Inf", Float64) === -Inf64
     @test c("+Inf", Float16) === +Inf16
+    @test c("Inf", Float32) === +Inf32
 
     # Test the overloads of union_try_parse() that do use a converter.
     @test WOML.union_try_parse(c, "abc", Int) === nothing
@@ -216,7 +256,8 @@ end
             Dict("j"=>1),
             Dict("j"=>2),
             Dict("j"=>3)
-        ]
+        ],
+        "Bb" => "Aa"
     )
     expected_d = Dict(
         7.5=>"abcd",
@@ -230,7 +271,8 @@ end
             Dict("j"=>1),
             Dict("j"=>2),
             Dict("j"=>3)
-        ]
+        ],
+        "Bb" => "Aa"
     )
     @test c(in_d, Dict{Any, Any}) == expected_d
 
@@ -247,6 +289,9 @@ end
     @test c("hey", Union{String, Int}) == "hey"
     @test c("5", Union{String, Int}) === 5
     @test c("-Inf", Union{String, Int, Float32}) === -Inf32
+    @test c("abcd", Union{String, Int, EE}) == "abcd"
+    @test c("AA", Union{String, EE}) == "AA"
+    @test c("Aa", Union{String, EE}) == Aa
 
     @test c([ 2, 3, 4 ], Union{String, Vector{Int}, Vector{Float64}}) ==
           [ 2, 3, 4 ]
@@ -339,7 +384,9 @@ end
           SSr(-Inf64, Sr("x\"y\"z-3"), Int[ ], nothing)
 end
 
-println("#TODO: Test enums")
+end # Main test-set
+
+println("#TODO: Test enums in struct data")
 println("#TODO: Test non-default converter settings")
 println("#TODO: Test abstract types")
 println("#TODO: Test custom types")
